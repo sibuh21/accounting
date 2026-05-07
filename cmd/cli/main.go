@@ -1,15 +1,20 @@
 package main
 
 import (
+	"accounting/config"
 	"accounting/internal/domain"
 	"accounting/internal/repo"
 	"accounting/internal/service"
 	"bufio"
+	"context"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type AccountingCLI struct {
@@ -17,10 +22,23 @@ type AccountingCLI struct {
 	ledgerSvc   *service.LedgerService
 	closingSvc  *service.ClosingService
 	reporterSvc *service.ReporterService
+	ctx         context.Context
 }
 
 func main() {
-	store := repo.NewStore()
+	cfg := config.LoadConfig()
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		cfg.Database.URL = dbURL
+	}
+	
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, cfg.Database.URL)
+	if err != nil {
+		log.Fatalf("unable to connect to database: %v", err)
+	}
+	defer pool.Close()
+
+	store := repo.NewStore(pool)
 	accountSvc := service.NewAccountService(store)
 	ledgerSvc := service.NewLedgerService(store)
 	closingSvc := service.NewClosingService(store, ledgerSvc)
@@ -31,36 +49,10 @@ func main() {
 		ledgerSvc:   ledgerSvc,
 		closingSvc:  closingSvc,
 		reporterSvc: reporterSvc,
+		ctx:         ctx,
 	}
 
-	cli.seedAccounts()
 	cli.run()
-}
-
-func (cli *AccountingCLI) seedAccounts() {
-	accounts := []domain.CreateAccountRequest{
-		{Code: "1000", Name: "Cash", Type: domain.Asset},
-		{Code: "1100", Name: "Accounts Receivable", Type: domain.Asset},
-		{Code: "1200", Name: "Inventory", Type: domain.Asset},
-		{Code: "1300", Name: "Equipment", Type: domain.Asset},
-		{Code: "2000", Name: "Accounts Payable", Type: domain.Liability},
-		{Code: "2100", Name: "Bank Loan", Type: domain.Liability},
-		{Code: "3000", Name: "Owner's Capital", Type: domain.Equity},
-		{Code: "3100", Name: "Retained Earnings", Type: domain.Equity},
-		{Code: "3200", Name: "Owner's Draw", Type: domain.Equity},
-		{Code: "4000", Name: "Coffee Sales", Type: domain.Revenue},
-		{Code: "4100", Name: "Pastry Sales", Type: domain.Revenue},
-		{Code: "5000", Name: "COGS - Coffee Beans", Type: domain.Expense},
-		{Code: "5100", Name: "COGS - Milk", Type: domain.Expense},
-		{Code: "6000", Name: "Wages Expense", Type: domain.Expense},
-		{Code: "6100", Name: "Rent Expense", Type: domain.Expense},
-		{Code: "6200", Name: "Utilities Expense", Type: domain.Expense},
-		{Code: "6300", Name: "Supplies Expense", Type: domain.Expense},
-	}
-
-	for _, acc := range accounts {
-		cli.accountSvc.CreateAccount(acc)
-	}
 }
 
 func (cli *AccountingCLI) run() {
@@ -111,65 +103,43 @@ func (cli *AccountingCLI) printMenu() {
 	fmt.Println("5. View Trial Balance")
 	fmt.Println("6. View Income Statement (P&L)")
 	fmt.Println("7. View Balance Sheet")
-	// case 8 is missing in menu list but original had it
 	fmt.Println("8. Close Month (Run Closing Entries)")
 	fmt.Println("9. View All Journal Entries")
 	fmt.Println("0. Exit")
 }
 
 func (cli *AccountingCLI) recordSales() {
-	fmt.Print("\nEnter total coffee sales amount: $")
-	coffeeSales := cli.getFloatInput()
-	fmt.Print("Enter total pastry sales amount: $")
-	pastrySales := cli.getFloatInput()
+	fmt.Print("\nEnter sales amount: $")
+	amount := cli.getFloatInput()
 	fmt.Print("Enter payment method (cash/credit): ")
 	paymentMethod := cli.getStringInput()
 
-	totalSales := coffeeSales + pastrySales
-	entry := domain.NewJournalEntry(time.Now(), fmt.Sprintf("Daily sales - %s", paymentMethod))
+	entry := domain.NewJournalEntry(time.Now(), fmt.Sprintf("Sales - %s", paymentMethod))
 
 	if strings.ToLower(paymentMethod) == "cash" {
-		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Cash", Debit: totalSales})
+		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Cash", Debit: amount})
 	} else {
-		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Accounts Receivable", Debit: totalSales})
+		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Accounts Receivable", Debit: amount})
 	}
 
-	if coffeeSales > 0 {
-		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Coffee Sales", Credit: coffeeSales})
-	}
-	if pastrySales > 0 {
-		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Pastry Sales", Credit: pastrySales})
-	}
+	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "General Sales", Credit: amount})
 
 	if err := cli.resolveAccountIDs(entry); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	if err := cli.ledgerSvc.PostEntry(entry); err != nil {
+	if err := cli.ledgerSvc.PostEntry(cli.ctx, entry); err != nil {
 		fmt.Printf("Error posting entry: %v\n", err)
 		return
 	}
 
-	fmt.Printf("\n✓ Recorded sales: $%.2f\n", totalSales)
+	fmt.Printf("\n✓ Recorded sales: $%.2f\n", amount)
 }
 
 func (cli *AccountingCLI) recordExpense() {
-	fmt.Println("\nExpense types: 1. Wages, 2. Rent, 3. Utilities, 4. Supplies, 5. Other")
-	fmt.Print("Select expense type: ")
-	choice := cli.getStringInput()
-
-	var expenseAccount string
-	switch choice {
-	case "1": expenseAccount = "Wages Expense"
-	case "2": expenseAccount = "Rent Expense"
-	case "3": expenseAccount = "Utilities Expense"
-	case "4": expenseAccount = "Supplies Expense"
-	default:
-		fmt.Print("Enter expense account name: ")
-		expenseAccount = cli.getStringInput()
-	}
-
+	fmt.Print("Enter expense account name: ")
+	expenseAccount := cli.getStringInput()
 	fmt.Print("Enter amount: $")
 	amount := cli.getFloatInput()
 	fmt.Print("Enter description: ")
@@ -184,7 +154,7 @@ func (cli *AccountingCLI) recordExpense() {
 		return
 	}
 
-	if err := cli.ledgerSvc.PostEntry(entry); err != nil {
+	if err := cli.ledgerSvc.PostEntry(cli.ctx, entry); err != nil {
 		fmt.Printf("Error posting entry: %v\n", err)
 		return
 	}
@@ -193,18 +163,14 @@ func (cli *AccountingCLI) recordExpense() {
 }
 
 func (cli *AccountingCLI) recordPurchaseInventory() {
-	fmt.Print("\nEnter inventory type (e.g., Coffee beans, Milk, Cups): ")
-	inventoryType := cli.getStringInput()
-	fmt.Print("Enter quantity: ")
-	quantity := cli.getFloatInput()
-	fmt.Print("Enter unit price: $")
-	unitPrice := cli.getFloatInput()
-
-	totalCost := quantity * unitPrice
+	fmt.Print("\nEnter inventory description: ")
+	desc := cli.getStringInput()
+	fmt.Print("Enter total cost: $")
+	totalCost := cli.getFloatInput()
 	fmt.Print("Payment method (cash/credit): ")
 	paymentMethod := cli.getStringInput()
 
-	entry := domain.NewJournalEntry(time.Now(), fmt.Sprintf("Purchased %v - %s", inventoryType, paymentMethod))
+	entry := domain.NewJournalEntry(time.Now(), fmt.Sprintf("Purchased %v - %s", desc, paymentMethod))
 	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Inventory", Debit: totalCost})
 
 	if strings.ToLower(paymentMethod) == "cash" {
@@ -218,7 +184,7 @@ func (cli *AccountingCLI) recordPurchaseInventory() {
 		return
 	}
 
-	if err := cli.ledgerSvc.PostEntry(entry); err != nil {
+	if err := cli.ledgerSvc.PostEntry(cli.ctx, entry); err != nil {
 		fmt.Printf("Error posting entry: %v\n", err)
 		return
 	}
@@ -233,6 +199,7 @@ func (cli *AccountingCLI) recordOwnerDraw() {
 	purpose := cli.getStringInput()
 
 	entry := domain.NewJournalEntry(time.Now(), fmt.Sprintf("Owner's draw - %s", purpose))
+	// Generic Equity account search
 	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Owner's Draw", Debit: amount})
 	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Cash", Credit: amount})
 
@@ -241,7 +208,7 @@ func (cli *AccountingCLI) recordOwnerDraw() {
 		return
 	}
 
-	if err := cli.ledgerSvc.PostEntry(entry); err != nil {
+	if err := cli.ledgerSvc.PostEntry(cli.ctx, entry); err != nil {
 		fmt.Printf("Error posting entry: %v\n", err)
 		return
 	}
@@ -250,7 +217,11 @@ func (cli *AccountingCLI) recordOwnerDraw() {
 }
 
 func (cli *AccountingCLI) viewTrialBalance() {
-	tb := cli.ledgerSvc.GetTrialBalance()
+	tb, err := cli.ledgerSvc.GetTrialBalance(cli.ctx)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
 	fmt.Println("\n" + strings.Repeat("=", 70))
 	fmt.Printf("%-15s %-30s %15s\n", "Code", "Account Name", "Balance")
 	fmt.Println(strings.Repeat("-", 70))
@@ -277,7 +248,11 @@ func (cli *AccountingCLI) viewIncomeStatement() {
 	startDate := time.Date(time.Now().Year(), time.Month(month), 1, 0, 0, 0, 0, time.Local)
 	endDate := startDate.AddDate(0, 1, -1)
 
-	pnl := cli.reporterSvc.GenerateIncomeStatement(startDate, endDate)
+	pnl, err := cli.reporterSvc.GenerateIncomeStatement(cli.ctx, startDate, endDate)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
 	fmt.Printf("\nINCOME STATEMENT for %s to %s\n", 
 		pnl["period_start"].(time.Time).Format("2006-01-02"),
 		pnl["period_end"].(time.Time).Format("2006-01-02"))
@@ -297,7 +272,11 @@ func (cli *AccountingCLI) viewIncomeStatement() {
 }
 
 func (cli *AccountingCLI) viewBalanceSheet() {
-	bs := cli.reporterSvc.GenerateBalanceSheet(time.Now())
+	bs, err := cli.reporterSvc.GenerateBalanceSheet(cli.ctx, time.Now())
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
 	fmt.Printf("\nBALANCE SHEET as of %s\n", bs["as_of_date"].(time.Time).Format("2006-01-02"))
 	
 	fmt.Println("\nASSETS:")
@@ -320,33 +299,36 @@ func (cli *AccountingCLI) viewBalanceSheet() {
 }
 
 func (cli *AccountingCLI) closeMonth() {
-	fmt.Print("\nEnter owner's draw amount for this month: $")
-	drawAmount := cli.getFloatInput()
 	monthEnd := time.Now().AddDate(0, 0, -time.Now().Day()).AddDate(0, 1, -1)
 
-	entry, err := cli.closingSvc.CloseMonth(monthEnd, drawAmount)
+	entries, err := cli.closingSvc.CloseMonth(cli.ctx, monthEnd)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	fmt.Printf("\n✓ Month closed. Entry ID: %s\n", entry.ID)
+	for _, entry := range entries {
+		fmt.Printf("\n✓ Month closed. Entry ID: %s\n", entry.ID)
+	}
 }
 
 func (cli *AccountingCLI) viewAllEntries() {
-	entries, _ := cli.accountSvc.GetEntries()
+	entries, err := cli.accountSvc.GetEntries(cli.ctx)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
 	for _, entry := range entries {
-		fmt.Printf("\n%s - %s\n", entry.Date.Format("2006-01-02"), entry.Description)
-		for _, line := range entry.Lines {
-			fmt.Printf("  %-30s %10.2f %10.2f\n", line.AccountName, line.Debit, line.Credit)
-		}
+		fmt.Printf("\n%s - %s\n", entry.Date.Time.Format("2006-01-02"), entry.Description)
+		fmt.Printf("  (Lines output suppressed for brevity in CLI, use API for full details)\n")
 	}
 }
 
 func (cli *AccountingCLI) resolveAccountIDs(entry *domain.JournalEntry) error {
-	accounts, _ := cli.accountSvc.ListAccounts()
+	accounts, _ := cli.accountSvc.ListAccounts(cli.ctx)
 	nameToID := make(map[string]string)
 	for _, acc := range accounts {
-		nameToID[acc.Name] = acc.ID
+		nameToID[acc.Name] = acc.ID.String()
+		nameToID[acc.Code] = acc.ID.String()
 	}
 	for i := range entry.Lines {
 		id, exists := nameToID[entry.Lines[i].AccountName]

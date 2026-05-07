@@ -47,7 +47,7 @@ func (h *AccountingHandler) CreateAccount(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 	}
 
-	acc, err := h.accountSvc.CreateAccount(req)
+	acc, err := h.accountSvc.CreateAccount(c.Request().Context(), req)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -56,7 +56,7 @@ func (h *AccountingHandler) CreateAccount(c echo.Context) error {
 }
 
 func (h *AccountingHandler) ListAccounts(c echo.Context) error {
-	accounts, err := h.accountSvc.ListAccounts()
+	accounts, err := h.accountSvc.ListAccounts(c.Request().Context())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -83,7 +83,7 @@ func (h *AccountingHandler) PostEntry(c echo.Context) error {
 		})
 	}
 
-	if err := h.ledgerSvc.PostEntry(entry); err != nil {
+	if err := h.ledgerSvc.PostEntry(c.Request().Context(), entry); err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
 
@@ -91,7 +91,7 @@ func (h *AccountingHandler) PostEntry(c echo.Context) error {
 }
 
 func (h *AccountingHandler) ListEntries(c echo.Context) error {
-	entries, err := h.accountSvc.GetEntries()
+	entries, err := h.accountSvc.GetEntries(c.Request().Context())
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
@@ -99,7 +99,10 @@ func (h *AccountingHandler) ListEntries(c echo.Context) error {
 }
 
 func (h *AccountingHandler) GetTrialBalance(c echo.Context) error {
-	tb := h.ledgerSvc.GetTrialBalance()
+	tb, err := h.ledgerSvc.GetTrialBalance(c.Request().Context())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
 	return c.JSON(http.StatusOK, tb)
 }
 
@@ -115,25 +118,24 @@ func (h *AccountingHandler) GetIncomeStatement(c echo.Context) error {
 	startDate := time.Date(time.Now().Year(), time.Month(month), 1, 0, 0, 0, 0, time.Local)
 	endDate := startDate.AddDate(0, 1, -1)
 
-	report := h.reporterSvc.GenerateIncomeStatement(startDate, endDate)
+	report, err := h.reporterSvc.GenerateIncomeStatement(c.Request().Context(), startDate, endDate)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
 	return c.JSON(http.StatusOK, report)
 }
 
 func (h *AccountingHandler) GetBalanceSheet(c echo.Context) error {
-	report := h.reporterSvc.GenerateBalanceSheet(time.Now())
+	report, err := h.reporterSvc.GenerateBalanceSheet(c.Request().Context(), time.Now())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
 	return c.JSON(http.StatusOK, report)
 }
 
 func (h *AccountingHandler) CloseMonth(c echo.Context) error {
-	var req struct {
-		DrawAmount float64 `json:"draw_amount"`
-	}
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-	}
-
 	monthEnd := time.Now().AddDate(0, 0, -time.Now().Day()).AddDate(0, 1, -1)
-	entry, err := h.closingSvc.CloseMonth(monthEnd, req.DrawAmount)
+	entry, err := h.closingSvc.CloseMonth(c.Request().Context(), monthEnd)
 	if err != nil {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}

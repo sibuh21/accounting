@@ -3,7 +3,10 @@ package service
 import (
 	"accounting/internal/domain"
 	"accounting/internal/repo"
+	"accounting/internal/repo/db"
+	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -19,61 +22,60 @@ func NewClosingService(store *repo.Store, ledgerService *LedgerService) *Closing
 	}
 }
 
-func (cs *ClosingService) CloseMonth(monthEnd time.Time, ownerDrawAmount float64) (*domain.JournalEntry, error) {
-	accounts := cs.store.GetAllAccounts()
+func (cs *ClosingService) CloseMonth(ctx context.Context, monthEnd time.Time) ([]*domain.JournalEntry, error) {
+	accounts, err := cs.store.Queries().ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	var totalRevenue, totalExpenses float64
-	var revenueAccounts, expenseAccounts []*domain.Account
+	var revenueAccounts, expenseAccounts []db.Account
 
 	for _, acc := range accounts {
+		balance := fromCents(acc.Balance)
 		switch acc.Type {
-		case domain.Revenue:
+		case string(domain.Revenue):
 			revenueAccounts = append(revenueAccounts, acc)
-			totalRevenue += acc.Balance
-		case domain.Expense:
+			totalRevenue += balance
+		case string(domain.Expense):
 			expenseAccounts = append(expenseAccounts, acc)
-			totalExpenses += acc.Balance
+			totalExpenses += balance
 		}
 	}
 
 	netProfit := totalRevenue - totalExpenses
-	closingEntry := domain.NewJournalEntry(monthEnd, "Monthly closing entry")
+	if netProfit == 0 && len(revenueAccounts) == 0 && len(expenseAccounts) == 0 {
+		return nil, fmt.Errorf("no temporary accounts to close")
+	}
+
+	closingEntry := domain.NewJournalEntry(monthEnd, "Monthly closing entry - Revenue & Expenses")
 
 	for _, acc := range revenueAccounts {
-		if acc.Balance > 0 {
+		balance := fromCents(acc.Balance)
+		if balance > 0 {
 			closingEntry.Lines = append(closingEntry.Lines, domain.EntryLine{
-				AccountID:   acc.ID,
+				AccountID:   acc.ID.String(),
 				AccountName: acc.Name,
-				Debit:       acc.Balance,
+				Debit:       balance,
 			})
 		}
 	}
 
 	for _, acc := range expenseAccounts {
-		if acc.Balance > 0 {
+		balance := fromCents(acc.Balance)
+		if balance > 0 {
 			closingEntry.Lines = append(closingEntry.Lines, domain.EntryLine{
-				AccountID:   acc.ID,
+				AccountID:   acc.ID.String(),
 				AccountName: acc.Name,
-				Credit:      acc.Balance,
+				Credit:      balance,
 			})
 		}
 	}
 
-	for _, acc := range accounts {
-		if acc.Name == "Owner's Draw" && acc.Balance > 0 {
-			closingEntry.Lines = append(closingEntry.Lines, domain.EntryLine{
-				AccountID:   acc.ID,
-				AccountName: acc.Name,
-				Credit:      acc.Balance,
-			})
-			netProfit -= acc.Balance
-		}
-	}
-
-	var retainedEarningsAccount *domain.Account
-	for _, acc := range accounts {
-		if acc.Name == "Retained Earnings" {
-			retainedEarningsAccount = acc
+	var retainedEarningsAccount *db.Account
+	for i, acc := range accounts {
+		if strings.Contains(strings.ToLower(acc.Name), "retained earnings") {
+			retainedEarningsAccount = &accounts[i]
 			break
 		}
 	}
@@ -84,21 +86,21 @@ func (cs *ClosingService) CloseMonth(monthEnd time.Time, ownerDrawAmount float64
 
 	if netProfit > 0 {
 		closingEntry.Lines = append(closingEntry.Lines, domain.EntryLine{
-			AccountID:   retainedEarningsAccount.ID,
+			AccountID:   retainedEarningsAccount.ID.String(),
 			AccountName: retainedEarningsAccount.Name,
 			Credit:      netProfit,
 		})
 	} else if netProfit < 0 {
 		closingEntry.Lines = append(closingEntry.Lines, domain.EntryLine{
-			AccountID:   retainedEarningsAccount.ID,
+			AccountID:   retainedEarningsAccount.ID.String(),
 			AccountName: retainedEarningsAccount.Name,
 			Debit:       -netProfit,
 		})
 	}
 
-	if err := cs.ledgerService.PostEntry(closingEntry); err != nil {
+	if err := cs.ledgerService.PostEntry(ctx, closingEntry); err != nil {
 		return nil, err
 	}
 
-	return closingEntry, nil
+	return []*domain.JournalEntry{closingEntry}, nil
 }

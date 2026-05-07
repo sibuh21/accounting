@@ -2,6 +2,7 @@ package service
 
 import (
 	"accounting/internal/repo"
+	"context"
 	"time"
 )
 
@@ -13,8 +14,11 @@ func NewReporterService(store *repo.Store) *ReporterService {
 	return &ReporterService{store: store}
 }
 
-func (rs *ReporterService) GenerateIncomeStatement(startDate, endDate time.Time) map[string]interface{} {
-	accounts := rs.store.GetAllAccounts()
+func (rs *ReporterService) GenerateIncomeStatement(ctx context.Context, startDate, endDate time.Time) (map[string]interface{}, error) {
+	accounts, err := rs.store.Queries().ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	var totalRevenue float64
 	var totalExpenses float64
@@ -22,17 +26,18 @@ func (rs *ReporterService) GenerateIncomeStatement(startDate, endDate time.Time)
 	expenses := []map[string]interface{}{}
 
 	for _, acc := range accounts {
+		balance := fromCents(acc.Balance)
 		if acc.Type == "Revenue" {
-			totalRevenue += acc.Balance
+			totalRevenue += balance
 			revenues = append(revenues, map[string]interface{}{
 				"account": acc.Name,
-				"amount":  acc.Balance,
+				"amount":  balance,
 			})
 		} else if acc.Type == "Expense" {
-			totalExpenses += acc.Balance
+			totalExpenses += balance
 			expenses = append(expenses, map[string]interface{}{
 				"account": acc.Name,
-				"amount":  acc.Balance,
+				"amount":  balance,
 			})
 		}
 	}
@@ -47,11 +52,14 @@ func (rs *ReporterService) GenerateIncomeStatement(startDate, endDate time.Time)
 		"expenses":       expenses,
 		"total_expenses": totalExpenses,
 		"net_income":     netIncome,
-	}
+	}, nil
 }
 
-func (rs *ReporterService) GenerateBalanceSheet(asOfDate time.Time) map[string]interface{} {
-	accounts := rs.store.GetAllAccounts()
+func (rs *ReporterService) GenerateBalanceSheet(ctx context.Context, asOfDate time.Time) (map[string]interface{}, error) {
+	accounts, err := rs.store.Queries().ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	var totalAssets float64
 	var totalLiabilities float64
@@ -62,24 +70,25 @@ func (rs *ReporterService) GenerateBalanceSheet(asOfDate time.Time) map[string]i
 	equity := []map[string]interface{}{}
 
 	for _, acc := range accounts {
+		balance := fromCents(acc.Balance)
 		switch acc.Type {
 		case "Asset":
-			totalAssets += acc.Balance
+			totalAssets += balance
 			assets = append(assets, map[string]interface{}{
 				"account": acc.Name,
-				"balance": acc.Balance,
+				"balance": balance,
 			})
 		case "Liability":
-			totalLiabilities += acc.Balance
+			totalLiabilities += balance
 			liabilities = append(liabilities, map[string]interface{}{
 				"account": acc.Name,
-				"balance": acc.Balance,
+				"balance": balance,
 			})
 		case "Equity":
-			totalEquity += acc.Balance
+			totalEquity += balance
 			equity = append(equity, map[string]interface{}{
 				"account": acc.Name,
-				"balance": acc.Balance,
+				"balance": balance,
 			})
 		}
 	}
@@ -93,5 +102,5 @@ func (rs *ReporterService) GenerateBalanceSheet(asOfDate time.Time) map[string]i
 		"equity":            equity,
 		"total_equity":      totalEquity,
 		"check":             totalAssets == (totalLiabilities + totalEquity),
-	}
+	}, nil
 }

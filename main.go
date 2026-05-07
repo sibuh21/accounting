@@ -6,18 +6,31 @@ import (
 	"accounting/internal/handler"
 	"accounting/internal/repo"
 	"accounting/internal/service"
+	"context"
 	"log"
 	"net/http"
+	"os"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
 
 func main() {
 	cfg := config.LoadConfig()
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		cfg.Database.URL = dbURL
+	}
+
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, cfg.Database.URL)
+	if err != nil {
+		log.Fatalf("unable to connect to database: %v", err)
+	}
+	defer pool.Close()
 
 	// Initialize Store
-	store := repo.NewStore()
+	store := repo.NewStore(pool)
 
 	// Initialize Services
 	accountSvc := service.NewAccountService(store)
@@ -25,8 +38,8 @@ func main() {
 	closingSvc := service.NewClosingService(store, ledgerSvc)
 	reporterSvc := service.NewReporterService(store)
 
-	// Seed initial accounts
-	seedAccounts(accountSvc)
+	// Seed initial accounts (Generic)
+	seedAccounts(ctx, accountSvc)
 
 	// Initialize Echo
 	e := echo.New()
@@ -51,28 +64,25 @@ func main() {
 	}
 }
 
-func seedAccounts(svc *service.AccountService) {
+func seedAccounts(ctx context.Context, svc *service.AccountService) {
+	// Check if already seeded
+	accs, _ := svc.ListAccounts(ctx)
+	if len(accs) > 0 {
+		return
+	}
+
 	accounts := []domain.CreateAccountRequest{
 		{Code: "1000", Name: "Cash", Type: domain.Asset},
 		{Code: "1100", Name: "Accounts Receivable", Type: domain.Asset},
-		{Code: "1200", Name: "Inventory", Type: domain.Asset},
-		{Code: "1300", Name: "Equipment", Type: domain.Asset},
 		{Code: "2000", Name: "Accounts Payable", Type: domain.Liability},
-		{Code: "2100", Name: "Bank Loan", Type: domain.Liability},
 		{Code: "3000", Name: "Owner's Capital", Type: domain.Equity},
 		{Code: "3100", Name: "Retained Earnings", Type: domain.Equity},
-		{Code: "3200", Name: "Owner's Draw", Type: domain.Equity},
-		{Code: "4000", Name: "Coffee Sales", Type: domain.Revenue},
-		{Code: "4100", Name: "Pastry Sales", Type: domain.Revenue},
-		{Code: "5000", Name: "COGS - Coffee Beans", Type: domain.Expense},
-		{Code: "5100", Name: "COGS - Milk", Type: domain.Expense},
-		{Code: "6000", Name: "Wages Expense", Type: domain.Expense},
-		{Code: "6100", Name: "Rent Expense", Type: domain.Expense},
-		{Code: "6200", Name: "Utilities Expense", Type: domain.Expense},
-		{Code: "6300", Name: "Supplies Expense", Type: domain.Expense},
+		{Code: "4000", Name: "General Sales", Type: domain.Revenue},
+		{Code: "5000", Name: "COGS", Type: domain.Expense},
+		{Code: "6000", Name: "General Expenses", Type: domain.Expense},
 	}
 
 	for _, acc := range accounts {
-		svc.CreateAccount(acc)
+		svc.CreateAccount(ctx, acc)
 	}
 }
