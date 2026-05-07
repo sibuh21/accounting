@@ -1,7 +1,11 @@
 package service
 
+import (
+	"math"
+)
+
 func toCents(amount float64) int64 {
-	return int64(amount*100 + 0.5)
+	return int64(math.Round(amount * 100))
 }
 
 func fromCents(cents int64) float64 {

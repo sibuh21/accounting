@@ -32,6 +32,11 @@ func main() {
 	// Initialize Store
 	store := repo.NewStore(pool)
 
+	// Run Migrations
+	if err := store.Migrate(ctx, "internal/repo/schema/000001_init.up.sql"); err != nil {
+		log.Printf("Migration warning (may already exist): %v", err)
+	}
+
 	// Initialize Services
 	accountSvc := service.NewAccountService(store)
 	ledgerSvc := service.NewLedgerService(store)

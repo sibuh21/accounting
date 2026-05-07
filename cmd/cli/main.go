@@ -39,6 +39,12 @@ func main() {
 	defer pool.Close()
 
 	store := repo.NewStore(pool)
+
+	// Run Migrations
+	if err := store.Migrate(ctx, "internal/repo/schema/000001_init.up.sql"); err != nil {
+		log.Printf("Migration warning: %v", err)
+	}
+
 	accountSvc := service.NewAccountService(store)
 	ledgerSvc := service.NewLedgerService(store)
 	closingSvc := service.NewClosingService(store, ledgerSvc)
@@ -52,7 +58,34 @@ func main() {
 		ctx:         ctx,
 	}
 
+	// Always try to seed in CLI to ensure accounts exist
+	cli.seedAccounts()
+
 	cli.run()
+}
+
+func (cli *AccountingCLI) seedAccounts() {
+	// Check if already seeded
+	accs, _ := cli.accountSvc.ListAccounts(cli.ctx)
+	if len(accs) > 0 {
+		return
+	}
+
+	accounts := []domain.CreateAccountRequest{
+		{Code: "1000", Name: "Cash", Type: domain.Asset},
+		{Code: "1100", Name: "Accounts Receivable", Type: domain.Asset},
+		{Code: "2000", Name: "Accounts Payable", Type: domain.Liability},
+		{Code: "3000", Name: "Owner's Capital", Type: domain.Equity},
+		{Code: "3100", Name: "Retained Earnings", Type: domain.Equity},
+		{Code: "3200", Name: "Owner's Draw", Type: domain.Equity},
+		{Code: "4000", Name: "General Sales", Type: domain.Revenue},
+		{Code: "5000", Name: "COGS", Type: domain.Expense},
+		{Code: "6000", Name: "General Expenses", Type: domain.Expense},
+	}
+
+	for _, acc := range accounts {
+		cli.accountSvc.CreateAccount(cli.ctx, acc)
+	}
 }
 
 func (cli *AccountingCLI) run() {
