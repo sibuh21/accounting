@@ -1,0 +1,377 @@
+package main
+
+import (
+	"accounting/internal/domain"
+	"accounting/internal/repo"
+	"accounting/internal/service"
+	"bufio"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type AccountingCLI struct {
+	accountSvc  *service.AccountService
+	ledgerSvc   *service.LedgerService
+	closingSvc  *service.ClosingService
+	reporterSvc *service.ReporterService
+}
+
+func main() {
+	store := repo.NewStore()
+	accountSvc := service.NewAccountService(store)
+	ledgerSvc := service.NewLedgerService(store)
+	closingSvc := service.NewClosingService(store, ledgerSvc)
+	reporterSvc := service.NewReporterService(store)
+
+	cli := &AccountingCLI{
+		accountSvc:  accountSvc,
+		ledgerSvc:   ledgerSvc,
+		closingSvc:  closingSvc,
+		reporterSvc: reporterSvc,
+	}
+
+	cli.seedAccounts()
+	cli.run()
+}
+
+func (cli *AccountingCLI) seedAccounts() {
+	accounts := []domain.CreateAccountRequest{
+		{Code: "1000", Name: "Cash", Type: domain.Asset},
+		{Code: "1100", Name: "Accounts Receivable", Type: domain.Asset},
+		{Code: "1200", Name: "Inventory", Type: domain.Asset},
+		{Code: "1300", Name: "Equipment", Type: domain.Asset},
+		{Code: "2000", Name: "Accounts Payable", Type: domain.Liability},
+		{Code: "2100", Name: "Bank Loan", Type: domain.Liability},
+		{Code: "3000", Name: "Owner's Capital", Type: domain.Equity},
+		{Code: "3100", Name: "Retained Earnings", Type: domain.Equity},
+		{Code: "3200", Name: "Owner's Draw", Type: domain.Equity},
+		{Code: "4000", Name: "Coffee Sales", Type: domain.Revenue},
+		{Code: "4100", Name: "Pastry Sales", Type: domain.Revenue},
+		{Code: "5000", Name: "COGS - Coffee Beans", Type: domain.Expense},
+		{Code: "5100", Name: "COGS - Milk", Type: domain.Expense},
+		{Code: "6000", Name: "Wages Expense", Type: domain.Expense},
+		{Code: "6100", Name: "Rent Expense", Type: domain.Expense},
+		{Code: "6200", Name: "Utilities Expense", Type: domain.Expense},
+		{Code: "6300", Name: "Supplies Expense", Type: domain.Expense},
+	}
+
+	for _, acc := range accounts {
+		cli.accountSvc.CreateAccount(acc)
+	}
+}
+
+func (cli *AccountingCLI) run() {
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for {
+		cli.printMenu()
+		fmt.Print("\nEnter choice: ")
+		scanner.Scan()
+		choice := strings.TrimSpace(scanner.Text())
+
+		switch choice {
+		case "1":
+			cli.recordSales()
+		case "2":
+			cli.recordExpense()
+		case "3":
+			cli.recordPurchaseInventory()
+		case "4":
+			cli.recordOwnerDraw()
+		case "5":
+			cli.viewTrialBalance()
+		case "6":
+			cli.viewIncomeStatement()
+		case "7":
+			cli.viewBalanceSheet()
+		case "8":
+			cli.closeMonth()
+		case "9":
+			cli.viewAllEntries()
+		case "0":
+			fmt.Println("Goodbye!")
+			return
+		default:
+			fmt.Println("Invalid choice. Please try again.")
+		}
+	}
+}
+
+func (cli *AccountingCLI) printMenu() {
+	fmt.Println("\n" + strings.Repeat("=", 50))
+	fmt.Println("         ACCOUNTING SYSTEM CLI")
+	fmt.Println(strings.Repeat("=", 50))
+	fmt.Println("1. Record Daily Sales")
+	fmt.Println("2. Record Expense")
+	fmt.Println("3. Record Inventory Purchase")
+	fmt.Println("4. Record Owner's Draw")
+	fmt.Println("5. View Trial Balance")
+	fmt.Println("6. View Income Statement (P&L)")
+	fmt.Println("7. View Balance Sheet")
+	// case 8 is missing in menu list but original had it
+	fmt.Println("8. Close Month (Run Closing Entries)")
+	fmt.Println("9. View All Journal Entries")
+	fmt.Println("0. Exit")
+}
+
+func (cli *AccountingCLI) recordSales() {
+	fmt.Print("\nEnter total coffee sales amount: $")
+	coffeeSales := cli.getFloatInput()
+	fmt.Print("Enter total pastry sales amount: $")
+	pastrySales := cli.getFloatInput()
+	fmt.Print("Enter payment method (cash/credit): ")
+	paymentMethod := cli.getStringInput()
+
+	totalSales := coffeeSales + pastrySales
+	entry := domain.NewJournalEntry(time.Now(), fmt.Sprintf("Daily sales - %s", paymentMethod))
+
+	if strings.ToLower(paymentMethod) == "cash" {
+		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Cash", Debit: totalSales})
+	} else {
+		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Accounts Receivable", Debit: totalSales})
+	}
+
+	if coffeeSales > 0 {
+		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Coffee Sales", Credit: coffeeSales})
+	}
+	if pastrySales > 0 {
+		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Pastry Sales", Credit: pastrySales})
+	}
+
+	if err := cli.resolveAccountIDs(entry); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	if err := cli.ledgerSvc.PostEntry(entry); err != nil {
+		fmt.Printf("Error posting entry: %v\n", err)
+		return
+	}
+
+	fmt.Printf("\n✓ Recorded sales: $%.2f\n", totalSales)
+}
+
+func (cli *AccountingCLI) recordExpense() {
+	fmt.Println("\nExpense types: 1. Wages, 2. Rent, 3. Utilities, 4. Supplies, 5. Other")
+	fmt.Print("Select expense type: ")
+	choice := cli.getStringInput()
+
+	var expenseAccount string
+	switch choice {
+	case "1": expenseAccount = "Wages Expense"
+	case "2": expenseAccount = "Rent Expense"
+	case "3": expenseAccount = "Utilities Expense"
+	case "4": expenseAccount = "Supplies Expense"
+	default:
+		fmt.Print("Enter expense account name: ")
+		expenseAccount = cli.getStringInput()
+	}
+
+	fmt.Print("Enter amount: $")
+	amount := cli.getFloatInput()
+	fmt.Print("Enter description: ")
+	description := cli.getStringInput()
+
+	entry := domain.NewJournalEntry(time.Now(), description)
+	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: expenseAccount, Debit: amount})
+	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Cash", Credit: amount})
+
+	if err := cli.resolveAccountIDs(entry); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	if err := cli.ledgerSvc.PostEntry(entry); err != nil {
+		fmt.Printf("Error posting entry: %v\n", err)
+		return
+	}
+
+	fmt.Printf("\n✓ Recorded expense: $%.2f\n", amount)
+}
+
+func (cli *AccountingCLI) recordPurchaseInventory() {
+	fmt.Print("\nEnter inventory type (e.g., Coffee beans, Milk, Cups): ")
+	inventoryType := cli.getStringInput()
+	fmt.Print("Enter quantity: ")
+	quantity := cli.getFloatInput()
+	fmt.Print("Enter unit price: $")
+	unitPrice := cli.getFloatInput()
+
+	totalCost := quantity * unitPrice
+	fmt.Print("Payment method (cash/credit): ")
+	paymentMethod := cli.getStringInput()
+
+	entry := domain.NewJournalEntry(time.Now(), fmt.Sprintf("Purchased %v - %s", inventoryType, paymentMethod))
+	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Inventory", Debit: totalCost})
+
+	if strings.ToLower(paymentMethod) == "cash" {
+		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Cash", Credit: totalCost})
+	} else {
+		entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Accounts Payable", Credit: totalCost})
+	}
+
+	if err := cli.resolveAccountIDs(entry); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	if err := cli.ledgerSvc.PostEntry(entry); err != nil {
+		fmt.Printf("Error posting entry: %v\n", err)
+		return
+	}
+
+	fmt.Printf("\n✓ Recorded inventory purchase: $%.2f\n", totalCost)
+}
+
+func (cli *AccountingCLI) recordOwnerDraw() {
+	fmt.Print("\nEnter draw amount: $")
+	amount := cli.getFloatInput()
+	fmt.Print("Enter purpose: ")
+	purpose := cli.getStringInput()
+
+	entry := domain.NewJournalEntry(time.Now(), fmt.Sprintf("Owner's draw - %s", purpose))
+	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Owner's Draw", Debit: amount})
+	entry.Lines = append(entry.Lines, domain.EntryLine{AccountName: "Cash", Credit: amount})
+
+	if err := cli.resolveAccountIDs(entry); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	if err := cli.ledgerSvc.PostEntry(entry); err != nil {
+		fmt.Printf("Error posting entry: %v\n", err)
+		return
+	}
+
+	fmt.Printf("\n✓ Recorded owner's draw: $%.2f\n", amount)
+}
+
+func (cli *AccountingCLI) viewTrialBalance() {
+	tb := cli.ledgerSvc.GetTrialBalance()
+	fmt.Println("\n" + strings.Repeat("=", 70))
+	fmt.Printf("%-15s %-30s %15s\n", "Code", "Account Name", "Balance")
+	fmt.Println(strings.Repeat("-", 70))
+
+	for _, acc := range tb["accounts"].([]map[string]interface{}) {
+		fmt.Printf("%-15s %-30s %15.2f\n", acc["code"], acc["name"], acc["balance"])
+	}
+
+	fmt.Println(strings.Repeat("-", 70))
+	fmt.Printf("%-45s %15.2f\n", "Total Debits:", tb["total_debits"])
+	fmt.Printf("%-45s %15.2f\n", "Total Credits:", tb["total_credits"])
+	fmt.Println(strings.Repeat("-", 70))
+
+	if tb["is_balanced"].(bool) {
+		fmt.Println("✓ Balanced")
+	} else {
+		fmt.Println("✗ Not Balanced")
+	}
+}
+
+func (cli *AccountingCLI) viewIncomeStatement() {
+	fmt.Print("\nEnter month (1-12): ")
+	month := cli.getIntInput()
+	startDate := time.Date(time.Now().Year(), time.Month(month), 1, 0, 0, 0, 0, time.Local)
+	endDate := startDate.AddDate(0, 1, -1)
+
+	pnl := cli.reporterSvc.GenerateIncomeStatement(startDate, endDate)
+	fmt.Printf("\nINCOME STATEMENT for %s to %s\n", 
+		pnl["period_start"].(time.Time).Format("2006-01-02"),
+		pnl["period_end"].(time.Time).Format("2006-01-02"))
+	
+	fmt.Println("\nREVENUES:")
+	for _, rev := range pnl["revenues"].([]map[string]interface{}) {
+		fmt.Printf("  %-30s %15.2f\n", rev["account"], rev["amount"])
+	}
+	fmt.Printf("Total Revenue: %15.2f\n", pnl["total_revenue"])
+
+	fmt.Println("\nEXPENSES:")
+	for _, exp := range pnl["expenses"].([]map[string]interface{}) {
+		fmt.Printf("  %-30s %15.2f\n", exp["account"], exp["amount"])
+	}
+	fmt.Printf("Total Expenses: %15.2f\n", pnl["total_expenses"])
+	fmt.Printf("\nNET INCOME: %15.2f\n", pnl["net_income"])
+}
+
+func (cli *AccountingCLI) viewBalanceSheet() {
+	bs := cli.reporterSvc.GenerateBalanceSheet(time.Now())
+	fmt.Printf("\nBALANCE SHEET as of %s\n", bs["as_of_date"].(time.Time).Format("2006-01-02"))
+	
+	fmt.Println("\nASSETS:")
+	for _, asset := range bs["assets"].([]map[string]interface{}) {
+		fmt.Printf("  %-30s %15.2f\n", asset["account"], asset["balance"])
+	}
+	fmt.Printf("Total Assets: %15.2f\n", bs["total_assets"])
+
+	fmt.Println("\nLIABILITIES:")
+	for _, lb := range bs["liabilities"].([]map[string]interface{}) {
+		fmt.Printf("  %-30s %15.2f\n", lb["account"], lb["balance"])
+	}
+	fmt.Printf("Total Liabilities: %15.2f\n", bs["total_liabilities"])
+
+	fmt.Println("\nEQUITY:")
+	for _, eq := range bs["equity"].([]map[string]interface{}) {
+		fmt.Printf("  %-30s %15.2f\n", eq["account"], eq["balance"])
+	}
+	fmt.Printf("Total Equity: %15.2f\n", bs["total_equity"])
+}
+
+func (cli *AccountingCLI) closeMonth() {
+	fmt.Print("\nEnter owner's draw amount for this month: $")
+	drawAmount := cli.getFloatInput()
+	monthEnd := time.Now().AddDate(0, 0, -time.Now().Day()).AddDate(0, 1, -1)
+
+	entry, err := cli.closingSvc.CloseMonth(monthEnd, drawAmount)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	fmt.Printf("\n✓ Month closed. Entry ID: %s\n", entry.ID)
+}
+
+func (cli *AccountingCLI) viewAllEntries() {
+	entries, _ := cli.accountSvc.GetEntries()
+	for _, entry := range entries {
+		fmt.Printf("\n%s - %s\n", entry.Date.Format("2006-01-02"), entry.Description)
+		for _, line := range entry.Lines {
+			fmt.Printf("  %-30s %10.2f %10.2f\n", line.AccountName, line.Debit, line.Credit)
+		}
+	}
+}
+
+func (cli *AccountingCLI) resolveAccountIDs(entry *domain.JournalEntry) error {
+	accounts, _ := cli.accountSvc.ListAccounts()
+	nameToID := make(map[string]string)
+	for _, acc := range accounts {
+		nameToID[acc.Name] = acc.ID
+	}
+	for i := range entry.Lines {
+		id, exists := nameToID[entry.Lines[i].AccountName]
+		if !exists { return fmt.Errorf("account not found: %s", entry.Lines[i].AccountName) }
+		entry.Lines[i].AccountID = id
+	}
+	return nil
+}
+
+func (cli *AccountingCLI) getFloatInput() float64 {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	val, _ := strconv.ParseFloat(strings.TrimSpace(scanner.Text()), 64)
+	return val
+}
+
+func (cli *AccountingCLI) getIntInput() int {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	val, _ := strconv.Atoi(strings.TrimSpace(scanner.Text()))
+	return val
+}
+
+func (cli *AccountingCLI) getStringInput() string {
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	return strings.TrimSpace(scanner.Text())
+}
