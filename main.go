@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
@@ -23,7 +22,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, cfg.Database.URL)
+	pool, err := repo.NewPool(ctx, cfg.Database.URL)
 	if err != nil {
 		log.Fatalf("unable to connect to database: %v", err)
 	}
