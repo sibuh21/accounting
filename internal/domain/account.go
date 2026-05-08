@@ -6,6 +6,7 @@ import (
 )
 
 type AccountType string
+type NormalBalance string
 
 const (
 	Asset     AccountType = "Asset"
@@ -14,22 +15,26 @@ const (
 	Revenue   AccountType = "Revenue"
 	Expense   AccountType = "Expense"
 )
+const (
+	Debit  NormalBalance = "debit"
+	Credit NormalBalance = "credit"
+)
 
 type Account struct {
-	ID            string      `json:"id"`
-	Code          string      `json:"code"`
-	Name          string      `json:"name"`
-	Type          AccountType `json:"type"`
-	NormalBalance string      `json:"normal_balance"`
-	Balance       float64     `json:"balance"`
-	CreatedAt     time.Time   `json:"created_at"`
-	UpdatedAt     time.Time   `json:"updated_at"`
+	ID            string        `json:"id"`
+	Code          string        `json:"code"`
+	Name          string        `json:"name"`
+	Type          AccountType   `json:"type"`
+	NormalBalance NormalBalance `json:"normal_balance"`
+	Balance       float64       `json:"balance"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
 }
 
 func NewAccount(code, name string, accountType AccountType) *Account {
-	normalBalance := "debit"
+	normalBalance := Debit
 	if accountType == Liability || accountType == Equity || accountType == Revenue {
-		normalBalance = "credit"
+		normalBalance = Credit
 	}
 
 	return &Account{
@@ -45,10 +50,10 @@ func NewAccount(code, name string, accountType AccountType) *Account {
 }
 
 func (a *Account) IsDebit() bool {
-	return a.NormalBalance == "debit"
+	return a.NormalBalance == Debit
 }
 
-func (a *Account) Increase(amount float64) {
+func (a *Account) Debit(amount float64) {
 	if a.IsDebit() {
 		a.Balance += amount
 	} else {
@@ -57,7 +62,7 @@ func (a *Account) Increase(amount float64) {
 	a.UpdatedAt = time.Now()
 }
 
-func (a *Account) Decrease(amount float64) {
+func (a *Account) Credit(amount float64) {
 	if a.IsDebit() {
 		a.Balance -= amount
 	} else {
